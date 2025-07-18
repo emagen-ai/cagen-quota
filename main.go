@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/emagen-ai/cagen-quota/internal/config"
 	"github.com/emagen-ai/cagen-quota/internal/database"
 	"github.com/emagen-ai/cagen-quota/internal/handlers"
+	"github.com/emagen-ai/cagen-quota/internal/middleware"
 	"github.com/emagen-ai/cagen-quota/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -172,19 +174,23 @@ func setupRouter(quotaHandler *handlers.QuotaHandler, logger *logrus.Logger, cfg
 		c.Next()
 	})
 
-	// CORS middleware
-	router.Use(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-		c.Header("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-Request-ID")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
+	// CORS middleware with proper configuration
+	corsConfig := middleware.DefaultCORSConfig()
+	
+	// Parse allowed origins from config
+	if cfg.AllowedOrigins != "" {
+		origins := strings.Split(cfg.AllowedOrigins, ",")
+		corsConfig.AllowOrigins = make([]string, 0, len(origins))
+		for _, origin := range origins {
+			trimmed := strings.TrimSpace(origin)
+			if trimmed != "" {
+				corsConfig.AllowOrigins = append(corsConfig.AllowOrigins, trimmed)
+			}
 		}
-
-		c.Next()
-	})
+		logger.Infof("CORS allowed origins: %v", corsConfig.AllowOrigins)
+	}
+	
+	router.Use(middleware.CORS(corsConfig, logger))
 
 	// Public routes
 	router.GET("/health", quotaHandler.HealthCheck)

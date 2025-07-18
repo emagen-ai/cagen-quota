@@ -30,6 +30,9 @@ type Config struct {
 	RailwayProjectID     string
 	RailwayEnvironmentID string
 	RailwayServiceID     string
+	
+	// CORS
+	AllowedOrigins string // Comma-separated list of allowed origins
 }
 
 func Load() *Config {
@@ -51,6 +54,7 @@ func Load() *Config {
 		RailwayProjectID:       getEnv("RAILWAY_PROJECT_ID", ""),
 		RailwayEnvironmentID:   getEnv("RAILWAY_ENVIRONMENT_ID", ""),
 		RailwayServiceID:       getEnv("RAILWAY_SERVICE_ID", ""),
+		AllowedOrigins:         getEnv("ALLOWED_ORIGINS", "https://cyberagent-frontend.vercel.app,http://localhost:3000,http://localhost:3001"),
 	}
 
 	// Validate required configs
