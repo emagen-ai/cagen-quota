@@ -125,6 +125,115 @@ func (qs *QuotaService) CreateQuota(userInfo *auth.UserInfo, request *models.Quo
 	return quota, nil
 }
 
+// ListQuotas lists quotas for a user with pagination and filtering
+func (qs *QuotaService) ListQuotas(userInfo *auth.UserInfo, page, pageSize int, quotaType string) (*models.QuotaListResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	offset := (page - 1) * pageSize
+
+	// Build query with filters
+	whereClause := "WHERE organization_id = $1 AND status = 'active'"
+	args := []interface{}{userInfo.OrganizationID}
+	argIndex := 2
+
+	if quotaType != "" {
+		whereClause += fmt.Sprintf(" AND type = $%d", argIndex)
+		args = append(args, quotaType)
+		argIndex++
+	}
+
+	// Count total items
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM quotas %s", whereClause)
+	var totalCount int
+	err := qs.db.QueryRow(countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count quotas: %w", err)
+	}
+
+	// Get quotas with pagination
+	query := fmt.Sprintf(`
+		SELECT id, name, description, type, total_mb, used_mb, allocated_mb, 
+		       parent_quota_id, level, path, owner_id, organization_id, team_id, 
+		       status, created_at, updated_at, deleted_at
+		FROM quotas %s 
+		ORDER BY created_at DESC 
+		LIMIT $%d OFFSET $%d
+	`, whereClause, argIndex, argIndex+1)
+	
+	args = append(args, pageSize, offset)
+
+	rows, err := qs.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query quotas: %w", err)
+	}
+	defer rows.Close()
+
+	var quotas []models.Quota
+	for rows.Next() {
+		var quota models.Quota
+		var parentQuotaID sql.NullString
+		var teamID sql.NullString
+		var deletedAt sql.NullTime
+
+		err := rows.Scan(
+			&quota.ID, &quota.Name, &quota.Description, &quota.Type,
+			&quota.TotalMB, &quota.UsedMB, &quota.AllocatedMB,
+			&parentQuotaID, &quota.Level, &quota.Path,
+			&quota.OwnerID, &quota.OrganizationID, &teamID,
+			&quota.Status, &quota.CreatedAt, &quota.UpdatedAt, &deletedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan quota: %w", err)
+		}
+
+		// Handle nullable fields
+		if parentQuotaID.Valid {
+			quota.ParentQuotaID = &parentQuotaID.String
+		}
+		if teamID.Valid {
+			quota.TeamID = &teamID.String
+		}
+		if deletedAt.Valid {
+			quota.DeletedAt = &deletedAt.Time
+		}
+
+		// Calculate available_mb
+		quota.AvailableMB = quota.TotalMB - quota.UsedMB - quota.AllocatedMB
+
+		quotas = append(quotas, quota)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating quota rows: %w", err)
+	}
+
+	// Calculate total pages
+	totalPages := (totalCount + pageSize - 1) / pageSize
+
+	qs.logger.WithFields(logrus.Fields{
+		"user_id":     userInfo.UserID,
+		"org_id":      userInfo.OrganizationID,
+		"total_count": totalCount,
+		"page":        page,
+		"page_size":   pageSize,
+		"quota_type":  quotaType,
+		"found":       len(quotas),
+	}).Info("Listed quotas successfully")
+
+	return &models.QuotaListResponse{
+		Quotas:     quotas,
+		TotalCount: totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
 // AllocateQuota allocates a sub-quota from a parent quota
 func (qs *QuotaService) AllocateQuota(userInfo *auth.UserInfo, parentQuotaID string, request *models.QuotaAllocateRequest) (*models.Quota, error) {
 	// Check admin permission on parent quota

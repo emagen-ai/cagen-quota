@@ -312,21 +312,18 @@ func (qh *QuotaHandler) ListQuotas(c *gin.Context) {
 		return
 	}
 
-	// For now, return empty list - this can be implemented later
-	response := &models.QuotaListResponse{
-		Quotas:     []models.Quota{},
-		TotalCount: 0,
-		Page:       page,
-		PageSize:   pageSize,
-		TotalPages: 0,
+	// Get quotas from service
+	response, err := qh.quotaService.ListQuotas(userInfo, page, pageSize, quotaType)
+	if err != nil {
+		qh.logger.WithError(err).WithFields(logrus.Fields{
+			"user_id":    userInfo.UserID,
+			"page":       page,
+			"page_size":  pageSize,
+			"quota_type": quotaType,
+		}).Error("Failed to list quotas")
+		qh.respondError(c, http.StatusInternalServerError, "Failed to list quotas", err)
+		return
 	}
-
-	qh.logger.WithFields(logrus.Fields{
-		"user_id":    userInfo.UserID,
-		"page":       page,
-		"page_size":  pageSize,
-		"quota_type": quotaType,
-	}).Info("List quotas requested (not implemented)")
 
 	qh.respondSuccess(c, http.StatusOK, "Quotas listed successfully", response)
 }
