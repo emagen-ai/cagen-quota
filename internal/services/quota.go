@@ -85,11 +85,15 @@ func (qs *QuotaService) CreateQuota(userInfo *auth.UserInfo, request *models.Quo
 			return fmt.Errorf("failed to create quota: %w", err)
 		}
 
-		// 2. Create quota resource in auth service
+		// 2. Create quota resource in auth service (disabled for now)
+		// TODO: Re-enable when auth service is fully configured
+		/*
 		err = qs.authClient.CreateResource(userInfo, quotaID, "quota", quota.Name, quota.Description)
 		if err != nil {
 			return fmt.Errorf("failed to create quota resource in auth service: %w", err)
 		}
+		*/
+		qs.logger.WithField("quota_id", quotaID).Info("Skipped auth service resource creation for testing")
 
 		// 3. Create audit log
 		err = qs.createAuditLogTx(tx, quotaID, "create", userInfo.UserID, nil, map[string]interface{}{
