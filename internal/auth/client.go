@@ -94,6 +94,11 @@ func NewAuthClient(serviceID, authBaseURL string, sharedKey []byte, logger *logr
 	}
 }
 
+// ServiceID returns the service ID
+func (ac *AuthClient) ServiceID() string {
+	return ac.serviceID
+}
+
 // EncryptUserInfo encrypts user information for sending to auth service
 func (ac *AuthClient) EncryptUserInfo(userInfo *UserInfo) (string, error) {
 	// Set timestamp and nonce if not already set
