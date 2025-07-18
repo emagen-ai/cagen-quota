@@ -259,7 +259,7 @@ func (qs *QuotaService) AllocateQuota(userInfo *auth.UserInfo, parentQuotaID str
 
 	// Allocate quota within transaction
 	childQuota := &models.Quota{}
-	err = qs.db.WithTransaction(func(tx *sql.Tx) error {
+	err := qs.db.WithTransaction(func(tx *sql.Tx) error {
 		// 1. Get parent quota with lock
 		parentQuota, err := qs.getQuotaForUpdateTx(tx, parentQuotaID)
 		if err != nil {
