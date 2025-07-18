@@ -348,11 +348,6 @@ func (ac *AuthClient) ConfigureServiceKey() error {
 	return nil
 }
 
-// ServiceID returns the service ID
-func (ac *AuthClient) ServiceID() string {
-	return ac.serviceID
-}
-
 // Quota permission constants
 const (
 	QuotaPermissionRead  = "read"
