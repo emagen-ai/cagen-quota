@@ -211,6 +211,7 @@ func setupRouter(quotaHandler *handlers.QuotaHandler, logger *logrus.Logger, cfg
 		// Usage management
 		v1.POST("/quotas/:id/usage/allocate", quotaHandler.AllocateUsage)
 		v1.POST("/quotas/:id/usage/deallocate", quotaHandler.DeallocateUsage)
+		v1.GET("/runtime-usage", quotaHandler.ListRuntimeUsage)
 	}
 
 	// Development endpoints (only in development mode)

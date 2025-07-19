@@ -10,6 +10,7 @@ import (
 	"github.com/emagen-ai/cagen-quota/internal/database"
 	"github.com/emagen-ai/cagen-quota/internal/models"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 )
 
@@ -653,6 +654,153 @@ func (qs *QuotaService) determineTeamID(parentQuota *models.Quota, request *mode
 		return &request.TargetID
 	}
 	return parentQuota.TeamID
+}
+
+// GetRuntimeUsage retrieves usage data grouped by runtime (resource_id)
+func (qs *QuotaService) GetRuntimeUsage(userInfo *auth.UserInfo, page, pageSize int) (*models.RuntimeUsageResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	offset := (page - 1) * pageSize
+
+	// Get runtime usage data with quota information
+	query := `
+		WITH runtime_usage AS (
+			SELECT 
+				qu.resource_id,
+				SUM(CASE WHEN qu.operation = 'allocate' THEN qu.usage_mb ELSE -qu.usage_mb END) as total_usage_mb,
+				COUNT(DISTINCT qu.quota_id) as quota_count,
+				MAX(qu.created_at) as last_activity,
+				ARRAY_AGG(DISTINCT q.id) as quota_ids,
+				ARRAY_AGG(DISTINCT q.name) as quota_names
+			FROM quota_usage qu
+			JOIN quotas q ON qu.quota_id = q.id
+			WHERE q.organization_id = $1 
+				AND q.status = 'active'
+				AND qu.resource_id IS NOT NULL
+			GROUP BY qu.resource_id
+			HAVING SUM(CASE WHEN qu.operation = 'allocate' THEN qu.usage_mb ELSE -qu.usage_mb END) > 0
+		)
+		SELECT 
+			resource_id,
+			total_usage_mb,
+			quota_count,
+			last_activity,
+			quota_ids,
+			quota_names
+		FROM runtime_usage
+		ORDER BY total_usage_mb DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := qs.db.Query(query, userInfo.OrganizationID, pageSize, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query runtime usage: %w", err)
+	}
+	defer rows.Close()
+
+	var runtimes []models.RuntimeUsage
+	for rows.Next() {
+		var runtime models.RuntimeUsage
+		var quotaIDs, quotaNames []string
+
+		err := rows.Scan(
+			&runtime.ResourceID,
+			&runtime.TotalUsageMB,
+			&runtime.QuotaCount,
+			&runtime.LastActivity,
+			pq.Array(&quotaIDs),
+			pq.Array(&quotaNames),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan runtime usage: %w", err)
+		}
+
+		// Build quota details
+		runtime.Quotas = make([]models.QuotaUsageSummary, 0, len(quotaIDs))
+		for i := 0; i < len(quotaIDs) && i < len(quotaNames); i++ {
+			runtime.Quotas = append(runtime.Quotas, models.QuotaUsageSummary{
+				QuotaID:   quotaIDs[i],
+				QuotaName: quotaNames[i],
+			})
+		}
+
+		// Get detailed usage per quota for this runtime
+		detailQuery := `
+			SELECT 
+				q.id,
+				q.name,
+				SUM(CASE WHEN qu.operation = 'allocate' THEN qu.usage_mb ELSE -qu.usage_mb END) as usage_mb
+			FROM quota_usage qu
+			JOIN quotas q ON qu.quota_id = q.id
+			WHERE qu.resource_id = $1 
+				AND q.organization_id = $2
+				AND q.status = 'active'
+			GROUP BY q.id, q.name
+			HAVING SUM(CASE WHEN qu.operation = 'allocate' THEN qu.usage_mb ELSE -qu.usage_mb END) > 0
+		`
+		
+		detailRows, err := qs.db.Query(detailQuery, runtime.ResourceID, userInfo.OrganizationID)
+		if err == nil {
+			runtime.Quotas = []models.QuotaUsageSummary{}
+			defer detailRows.Close()
+			
+			for detailRows.Next() {
+				var quotaSummary models.QuotaUsageSummary
+				err := detailRows.Scan(&quotaSummary.QuotaID, &quotaSummary.QuotaName, &quotaSummary.UsageMB)
+				if err == nil {
+					runtime.Quotas = append(runtime.Quotas, quotaSummary)
+				}
+			}
+		}
+
+		runtimes = append(runtimes, runtime)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating runtime usage rows: %w", err)
+	}
+
+	// Count total runtimes
+	countQuery := `
+		SELECT COUNT(DISTINCT qu.resource_id)
+		FROM quota_usage qu
+		JOIN quotas q ON qu.quota_id = q.id
+		WHERE q.organization_id = $1 
+			AND q.status = 'active'
+			AND qu.resource_id IS NOT NULL
+		GROUP BY qu.resource_id
+		HAVING SUM(CASE WHEN qu.operation = 'allocate' THEN qu.usage_mb ELSE -qu.usage_mb END) > 0
+	`
+	var totalCount int
+	err = qs.db.QueryRow(countQuery, userInfo.OrganizationID).Scan(&totalCount)
+	if err != nil && err != sql.ErrNoRows {
+		qs.logger.WithError(err).Warn("Failed to count runtime usage")
+		totalCount = len(runtimes)
+	}
+
+	totalPages := (totalCount + pageSize - 1) / pageSize
+
+	qs.logger.WithFields(logrus.Fields{
+		"user_id":     userInfo.UserID,
+		"org_id":      userInfo.OrganizationID,
+		"total_count": totalCount,
+		"page":        page,
+		"page_size":   pageSize,
+		"found":       len(runtimes),
+	}).Info("Listed runtime usage successfully")
+
+	return &models.RuntimeUsageResponse{
+		Runtimes:   runtimes,
+		TotalCount: totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
 }
 
 func (qs *QuotaService) createAuditLogTx(tx *sql.Tx, quotaID, actionType, actorUserID string, targetUserID *string, details map[string]interface{}) error {

@@ -328,6 +328,43 @@ func (qh *QuotaHandler) ListQuotas(c *gin.Context) {
 	qh.respondSuccess(c, http.StatusOK, "Quotas listed successfully", response)
 }
 
+// ListRuntimeUsage handles runtime usage listing requests
+func (qh *QuotaHandler) ListRuntimeUsage(c *gin.Context) {
+	// Parse pagination parameters
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	
+	// Get auth parameters
+	serviceID := c.Query("service_id")
+	encryptedData := c.Query("encrypted_data")
+	
+	if serviceID == "" || encryptedData == "" {
+		qh.respondError(c, http.StatusBadRequest, "service_id and encrypted_data are required", nil)
+		return
+	}
+
+	// Decrypt user info
+	userInfo, err := qh.decryptUserInfo(serviceID, encryptedData)
+	if err != nil {
+		qh.respondError(c, http.StatusUnauthorized, "Failed to decrypt user credentials", err)
+		return
+	}
+
+	// Get runtime usage from service
+	response, err := qh.quotaService.GetRuntimeUsage(userInfo, page, pageSize)
+	if err != nil {
+		qh.logger.WithError(err).WithFields(logrus.Fields{
+			"user_id":   userInfo.UserID,
+			"page":      page,
+			"page_size": pageSize,
+		}).Error("Failed to list runtime usage")
+		qh.respondError(c, http.StatusInternalServerError, "Failed to list runtime usage", err)
+		return
+	}
+
+	qh.respondSuccess(c, http.StatusOK, "Runtime usage listed successfully", response)
+}
+
 // HealthCheck handles health check requests
 func (qh *QuotaHandler) HealthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{

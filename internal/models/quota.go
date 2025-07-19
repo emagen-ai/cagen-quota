@@ -159,3 +159,28 @@ type QuotaUsageHistoryResponse struct {
 	PageSize   int          `json:"page_size"`
 	TotalPages int          `json:"total_pages"`
 }
+
+// RuntimeUsage represents runtime (resource) usage information
+type RuntimeUsage struct {
+	ResourceID   string                `json:"resource_id"`
+	TotalUsageMB int64                 `json:"total_usage_mb"`
+	QuotaCount   int                   `json:"quota_count"`
+	LastActivity time.Time             `json:"last_activity"`
+	Quotas       []QuotaUsageSummary   `json:"quotas"`
+}
+
+// QuotaUsageSummary represents quota usage summary for a runtime
+type QuotaUsageSummary struct {
+	QuotaID   string `json:"quota_id"`
+	QuotaName string `json:"quota_name"`
+	UsageMB   int64  `json:"usage_mb"`
+}
+
+// RuntimeUsageResponse represents a paginated list of runtime usage
+type RuntimeUsageResponse struct {
+	Runtimes   []RuntimeUsage `json:"runtimes"`
+	TotalCount int            `json:"total_count"`
+	Page       int            `json:"page"`
+	PageSize   int            `json:"page_size"`
+	TotalPages int            `json:"total_pages"`
+}
