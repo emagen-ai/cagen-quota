@@ -667,3 +667,153 @@ func (qs *QuotaService) createAuditLogTx(tx *sql.Tx, quotaID, actionType, actorU
 	_, err := tx.Exec(query, auditID, quotaID, actionType, actorUserID, targetUserID, detailsJSON)
 	return err
 }
+
+// AllocateUsage allocates usage from a quota to a specific resource (like runtime)
+func (qs *QuotaService) AllocateUsage(userInfo *auth.UserInfo, quotaID string, request *models.QuotaUsageRequest) error {
+	// Validate request
+	if request.UsageMB <= 0 {
+		return fmt.Errorf("usage_mb must be greater than 0")
+	}
+
+	if request.ResourceID == "" {
+		return fmt.Errorf("resource_id is required")
+	}
+
+	// Generate usage ID
+	usageID := fmt.Sprintf("usage_%s", strings.ToLower(uuid.New().String()[:13]))
+
+	// Allocate usage within transaction
+	err := qs.db.WithTransaction(func(tx *sql.Tx) error {
+		// 1. Get quota with lock
+		quota, err := qs.getQuotaForUpdateTx(tx, quotaID)
+		if err != nil {
+			return fmt.Errorf("failed to get quota: %w", err)
+		}
+
+		// 2. Check available capacity
+		if quota.AvailableMB < request.UsageMB {
+			return fmt.Errorf("insufficient quota: available %d MB, requested %d MB",
+				quota.AvailableMB, request.UsageMB)
+		}
+
+		// 3. Update quota used_mb
+		updateQuery := `UPDATE quotas SET used_mb = used_mb + $1, updated_at = NOW() WHERE id = $2`
+		_, err = tx.Exec(updateQuery, request.UsageMB, quotaID)
+		if err != nil {
+			return fmt.Errorf("failed to update quota usage: %w", err)
+		}
+
+		// 4. Create usage record
+		insertUsageQuery := `
+			INSERT INTO quota_usage (id, quota_id, user_id, resource_id, usage_mb, operation, reason, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		`
+		_, err = tx.Exec(insertUsageQuery, usageID, quotaID, userInfo.UserID, 
+			request.ResourceID, request.UsageMB, models.OperationAllocate, request.Reason)
+		if err != nil {
+			return fmt.Errorf("failed to create usage record: %w", err)
+		}
+
+		// 5. Create audit log
+		err = qs.createAuditLogTx(tx, quotaID, "allocate_usage", userInfo.UserID, nil, map[string]interface{}{
+			"resource_id": request.ResourceID,
+			"usage_mb":    request.UsageMB,
+			"reason":      request.Reason,
+			"usage_id":    usageID,
+		})
+		if err != nil {
+			qs.logger.WithError(err).Warn("Failed to create audit log")
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	qs.logger.WithFields(logrus.Fields{
+		"quota_id":    quotaID,
+		"resource_id": request.ResourceID,
+		"usage_mb":    request.UsageMB,
+		"usage_id":    usageID,
+		"user_id":     userInfo.UserID,
+	}).Info("Usage allocated successfully")
+
+	return nil
+}
+
+// DeallocateUsage releases usage from a resource back to the quota
+func (qs *QuotaService) DeallocateUsage(userInfo *auth.UserInfo, quotaID string, request *models.QuotaUsageRequest) error {
+	// Validate request
+	if request.UsageMB <= 0 {
+		return fmt.Errorf("usage_mb must be greater than 0")
+	}
+
+	if request.ResourceID == "" {
+		return fmt.Errorf("resource_id is required")
+	}
+
+	// Generate usage ID
+	usageID := fmt.Sprintf("usage_%s", strings.ToLower(uuid.New().String()[:13]))
+
+	// Deallocate usage within transaction
+	err := qs.db.WithTransaction(func(tx *sql.Tx) error {
+		// 1. Get quota with lock
+		quota, err := qs.getQuotaForUpdateTx(tx, quotaID)
+		if err != nil {
+			return fmt.Errorf("failed to get quota: %w", err)
+		}
+
+		// 2. Check if enough usage to deallocate
+		if quota.UsedMB < request.UsageMB {
+			return fmt.Errorf("cannot deallocate %d MB: only %d MB is currently used",
+				request.UsageMB, quota.UsedMB)
+		}
+
+		// 3. Update quota used_mb
+		updateQuery := `UPDATE quotas SET used_mb = used_mb - $1, updated_at = NOW() WHERE id = $2`
+		_, err = tx.Exec(updateQuery, request.UsageMB, quotaID)
+		if err != nil {
+			return fmt.Errorf("failed to update quota usage: %w", err)
+		}
+
+		// 4. Create usage record
+		insertUsageQuery := `
+			INSERT INTO quota_usage (id, quota_id, user_id, resource_id, usage_mb, operation, reason, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		`
+		_, err = tx.Exec(insertUsageQuery, usageID, quotaID, userInfo.UserID,
+			request.ResourceID, request.UsageMB, models.OperationDeallocate, request.Reason)
+		if err != nil {
+			return fmt.Errorf("failed to create usage record: %w", err)
+		}
+
+		// 5. Create audit log
+		err = qs.createAuditLogTx(tx, quotaID, "deallocate_usage", userInfo.UserID, nil, map[string]interface{}{
+			"resource_id": request.ResourceID,
+			"usage_mb":    request.UsageMB,
+			"reason":      request.Reason,
+			"usage_id":    usageID,
+		})
+		if err != nil {
+			qs.logger.WithError(err).Warn("Failed to create audit log")
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	qs.logger.WithFields(logrus.Fields{
+		"quota_id":    quotaID,
+		"resource_id": request.ResourceID,
+		"usage_mb":    request.UsageMB,
+		"usage_id":    usageID,
+		"user_id":     userInfo.UserID,
+	}).Info("Usage deallocated successfully")
+
+	return nil
+}
